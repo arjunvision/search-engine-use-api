@@ -3,8 +3,8 @@ from langchain_openai import ChatOpenAI
 from langchain_community.utilities import ArxivAPIWrapper, WikipediaAPIWrapper
 from langchain_community.tools import ArxivQueryRun, WikipediaQueryRun, DuckDuckGoSearchRun
 from langchain.agents import create_react_agent, AgentExecutor
-from langchain.prompts import PromptTemplate
-from langchain.callbacks import StreamlitCallbackHandler
+from langchain_core.prompts import PromptTemplate
+from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 
 # ── Tools Setup ───────────────────────────────────────────────
 arxiv_wrapper = ArxivAPIWrapper(top_k_results=1, doc_content_chars_max=200)
@@ -15,7 +15,7 @@ wiki = WikipediaQueryRun(api_wrapper=wiki_wrapper)
 
 search = DuckDuckGoSearchRun(name="Search")
 
-# ── ReAct Prompt (hardcoded — no hub needed) ──────────────────
+# ── ReAct Prompt ──────────────────────────────────────────────
 REACT_TEMPLATE = """Answer the following questions as best you can. You have access to the following tools:
 
 {tools}
@@ -68,7 +68,6 @@ if prompt := st.chat_input(placeholder="e.g. What is machine learning?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.chat_message("user").write(prompt)
 
-    # ── LLM Setup ─────────────────────────────────────────────
     llm = ChatOpenAI(
         openai_api_key=api_key,
         model_name="gpt-4o-mini",
@@ -78,7 +77,6 @@ if prompt := st.chat_input(placeholder="e.g. What is machine learning?"):
 
     tools = [search, arxiv, wiki]
 
-    # ── Agent ─────────────────────────────────────────────────
     agent = create_react_agent(llm, tools, react_prompt)
     agent_executor = AgentExecutor(
         agent=agent,
