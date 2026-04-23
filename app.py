@@ -2,8 +2,8 @@ import streamlit as st
 from langchain_openai import ChatOpenAI
 from langchain_community.utilities import ArxivAPIWrapper, WikipediaAPIWrapper
 from langchain_community.tools import ArxivQueryRun, WikipediaQueryRun, DuckDuckGoSearchRun
-from langchain import hub
 from langchain.agents import create_react_agent, AgentExecutor
+from langchain.prompts import PromptTemplate
 from langchain.callbacks import StreamlitCallbackHandler
 
 # ── Tools Setup ───────────────────────────────────────────────
@@ -14,6 +14,29 @@ wiki_wrapper = WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=200)
 wiki = WikipediaQueryRun(api_wrapper=wiki_wrapper)
 
 search = DuckDuckGoSearchRun(name="Search")
+
+# ── ReAct Prompt (hardcoded — no hub needed) ──────────────────
+REACT_TEMPLATE = """Answer the following questions as best you can. You have access to the following tools:
+
+{tools}
+
+Use the following format:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{tool_names}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
+
+Begin!
+
+Question: {input}
+Thought:{agent_scratchpad}"""
+
+react_prompt = PromptTemplate.from_template(REACT_TEMPLATE)
 
 # ── Page Config ───────────────────────────────────────────────
 st.set_page_config(page_title="ChatGPT Search Agent", page_icon="🔎")
@@ -55,9 +78,8 @@ if prompt := st.chat_input(placeholder="e.g. What is machine learning?"):
 
     tools = [search, arxiv, wiki]
 
-    # ── Modern Agent (LangChain v0.2+) ────────────────────────
-    prompt_template = hub.pull("hwchase17/react")          # official ReAct prompt
-    agent = create_react_agent(llm, tools, prompt_template)
+    # ── Agent ─────────────────────────────────────────────────
+    agent = create_react_agent(llm, tools, react_prompt)
     agent_executor = AgentExecutor(
         agent=agent,
         tools=tools,
