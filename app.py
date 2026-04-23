@@ -1,49 +1,13 @@
 import streamlit as st
-from langchain_openai import ChatOpenAI
-from langchain_community.utilities import ArxivAPIWrapper, WikipediaAPIWrapper
-from langchain_community.tools import ArxivQueryRun, WikipediaQueryRun
-from langchain_community.tools import DuckDuckGoSearchRun
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain_core.prompts import PromptTemplate
-from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
-
-# ── Tools Setup ───────────────────────────────────────────────
-arxiv_wrapper = ArxivAPIWrapper(top_k_results=1, doc_content_chars_max=200)
-arxiv = ArxivQueryRun(api_wrapper=arxiv_wrapper)
-
-wiki_wrapper = WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=200)
-wiki = WikipediaQueryRun(api_wrapper=wiki_wrapper)
-
-search = DuckDuckGoSearchRun()
-
-# ── ReAct Prompt ──────────────────────────────────────────────
-REACT_TEMPLATE = """Answer the following questions as best you can. \
-You have access to the following tools:
-
-{tools}
-
-Use the following format:
-
-Question: the input question you must answer
-Thought: you should always think about what to do
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
-Thought: I now know the final answer
-Final Answer: the final answer to the original input question
-
-Begin!
-
-Question: {input}
-Thought:{agent_scratchpad}"""
-
-react_prompt = PromptTemplate.from_template(REACT_TEMPLATE)
+import openai
+import wikipedia
+import arxiv
+from duckduckgo_search import DDGS
 
 # ── Page Config ───────────────────────────────────────────────
 st.set_page_config(page_title="ChatGPT Search Agent", page_icon="🔎")
 st.title("🔎 ChatGPT — Chat with Search")
-st.caption("Powered by GPT-4o-mini + LangChain + DuckDuckGo, Arxiv, Wikipedia")
+st.caption("Powered by GPT-4o-mini + DuckDuckGo + Wikipedia + Arxiv")
 
 # ── Sidebar: API Key ──────────────────────────────────────────
 st.sidebar.title("⚙️ Settings")
@@ -53,8 +17,41 @@ if not api_key:
     api_key = st.sidebar.text_input("Enter your OpenAI API Key:", type="password")
 
 if not api_key:
-    st.sidebar.warning("Please enter your OpenAI API key to start.")
+    st.sidebar.warning("Please enter your OpenAI API key.")
     st.stop()
+
+# ── Search Helper Functions ───────────────────────────────────
+def search_web(query: str) -> str:
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=3))
+        if not results:
+            return "No results found."
+        return "\n\n".join(
+            f"**{r['title']}**\n{r['body']}" for r in results
+        )
+    except Exception as e:
+        return f"Search error: {str(e)}"
+
+def search_wikipedia(query: str) -> str:
+    try:
+        summary = wikipedia.summary(query, sentences=3)
+        return summary
+    except Exception as e:
+        return f"Wikipedia error: {str(e)}"
+
+def search_arxiv(query: str) -> str:
+    try:
+        client = arxiv.Client()
+        search = arxiv.Search(query=query, max_results=2)
+        results = list(client.results(search))
+        if not results:
+            return "No arxiv papers found."
+        return "\n\n".join(
+            f"**{r.title}**\n{r.summary[:300]}..." for r in results
+        )
+    except Exception as e:
+        return f"Arxiv error: {str(e)}"
 
 # ── Chat History ──────────────────────────────────────────────
 if "messages" not in st.session_state:
@@ -70,37 +67,53 @@ if prompt := st.chat_input(placeholder="e.g. What is machine learning?"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.chat_message("user").write(prompt)
 
-    llm = ChatOpenAI(
-        openai_api_key=api_key,
-        model_name="gpt-4o-mini",
-        temperature=0,
-        streaming=True
-    )
-
-    tools = [search, arxiv, wiki]
-
-    agent = create_react_agent(llm, tools, react_prompt)
-    agent_executor = AgentExecutor(
-        agent=agent,
-        tools=tools,
-        handle_parsing_errors=True,
-        verbose=True,
-        max_iterations=5           # prevents infinite loops
-    )
-
     with st.chat_message("assistant"):
-        st_cb = StreamlitCallbackHandler(
-            st.container(),
-            expand_new_thoughts=False
-        )
-        try:
-            response = agent_executor.invoke(
-                {"input": prompt},
-                config={"callbacks": [st_cb]}
-            )
-            answer = response["output"]
-        except Exception as e:
-            answer = f"Sorry, I ran into an error: {str(e)}"
+        with st.spinner("Searching and thinking..."):
+            try:
+                # Step 1: Search all three sources
+                web_results     = search_web(prompt)
+                wiki_results    = search_wikipedia(prompt)
+                arxiv_results   = search_arxiv(prompt)
+
+                # Step 2: Build context for GPT
+                context = f"""Use the following search results to answer the user's question.
+
+### Web Search Results:
+{web_results}
+
+### Wikipedia:
+{wiki_results}
+
+### Arxiv Papers:
+{arxiv_results}
+
+### User Question:
+{prompt}
+
+Answer clearly and concisely based on the above information."""
+
+                # Step 3: Ask GPT-4o-mini
+                client = openai.OpenAI(api_key=api_key)
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant that answers questions using search results."},
+                        {"role": "user",   "content": context}
+                    ],
+                    temperature=0,
+                    stream=True
+                )
+
+                # Step 4: Stream the response
+                answer = ""
+                placeholder = st.empty()
+                for chunk in response:
+                    delta = chunk.choices[0].delta.content or ""
+                    answer += delta
+                    placeholder.markdown(answer)
+
+            except Exception as e:
+                answer = f"Error: {str(e)}"
+                st.error(answer)
 
         st.session_state.messages.append({"role": "assistant", "content": answer})
-        st.write(answer)
